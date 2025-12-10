@@ -756,41 +756,60 @@ public class ProcessingFacade {
 
         long responsesProcessed = 0;
         long detailsProcessed = 0;
-        int batchCount = 0;
+
+        final int BATCH_SIZE = 50;
 
         try (BufferedReader br = new BufferedReader(new FileReader(file));
              MappingIterator<ResponseJson> it = mapper.readerFor(ResponseJson.class).readValues(br)) {
 
             while (it.hasNext()) {
-                ResponseJson r = it.next();
 
-                // Convert main response entity
-                Responses respEntity = convertToResponses(r);
-                em.persist(respEntity);
+                ResponseJson json = it.next();
+
+                // Convert & persist response
+                Responses r = convertToResponses(json);
+                em.merge(r);
                 responsesProcessed++;
 
-                // Convert detail entities
-                List<ResponsesDetails> detailEntities = convertToDetails(r, respEntity);
-                for (ResponsesDetails d : detailEntities) {
-                    em.persist(d);
-                    detailsProcessed++;
+                // process pages → questions → answers
+                if (json.pages != null) {
+                    for (PageJson p : json.pages) {
+                        if (p.questions == null) continue;
+
+                        for (QuestionJson q : p.questions) {
+                            if (q.answers == null) continue;
+
+                            for (AnswerJson a : q.answers) {
+
+                                ResponsesDetails d = convertToDetails(json, p, q, a);
+                                em.merge(d);
+
+                                detailsProcessed++;
+
+                                // Batch every N records
+                                if (detailsProcessed % BATCH_SIZE == 0) {
+                                    em.flush();
+                                    em.clear();
+                                    logger.info("Committed batch; detailsProcessed=" + detailsProcessed);
+                                }
+                            }
+                        }
+                    }
                 }
 
-                // Batch flush every 100
-                if (++batchCount % 100 == 0) {
+                // batch response commits too
+                if (responsesProcessed % BATCH_SIZE == 0) {
                     em.flush();
                     em.clear();
-                    logger.info("Flushed batch: responses=" + responsesProcessed +
-                            " details=" + detailsProcessed);
                 }
             }
 
-            // Final flush
+            // final flush
             em.flush();
             em.clear();
 
             logger.info(String.format(
-                    "NDJSON import finished. responses=%d details=%d",
+                    "NDJSON import completed: responses=%d, details=%d",
                     responsesProcessed, detailsProcessed
             ));
 
@@ -800,75 +819,52 @@ public class ProcessingFacade {
         }
     }
 
-    private Responses convertToResponses(ResponseJson json) {
+
+    private Responses convertToResponses(ResponseJson d) {
         Responses r = new Responses();
 
-        r.setResponseId(json.id);                              // PK
-        r.setSmId(json.survey_id);                             // survey_id
-        r.setRcptId(json.recipient_id);                        // recipient ID
-        r.setCollectorId(json.collector_id);                   // collector
-        r.setIpAddress(json.ip_address);
-        r.setResponseStatus(json.response_status);
-        r.setResponseLanguage(json.language);
-        r.setTotalTime(json.total_time != null ? json.total_time : 0);
+        r.setResponseId(d.id);
+        r.setSmId(d.surveyId);
+        r.setRcptId(d.recipientId);
+        r.setCollectorId(d.collectorId);
+        r.setIpAddress(d.ipAddress);
+        r.setResponseStatus(d.responseStatus);
+        r.setResponseLanguage(d.language);
+        r.setTotalTime(d.totalTime);
+        r.setResponseHref(d.href);
+        r.setAnalyzeUrl(d.analyzeUrl);
+        r.setEditUrl(d.editUrl);
 
-        r.setResponseHref(json.href);
-        r.setAnalyzeUrl(json.analyze_url);
-        r.setEditUrl(json.edit_url);
-
-        // Handling dates
-        try {
-            if (json.date_modified != null)
-                r.setDateModified(convert(r.dateModified));
-            if (json.date_created != null)
-                r.setDateCreated(convert(r.dateCreated));
-        } catch (Exception e) {
-            logger.warning("Date parse error for response " + json.id + ": " + e.getMessage());
+        // Convert dateCreated
+        if (d.dateCreated != null && !d.dateCreated.trim().isEmpty()) {
+            Instant instant = Instant.parse(d.dateCreated);
+            r.setDateCreated(Date.from(instant));
         }
 
-        r.setUpdateDate(new Date());
+        // Convert dateModified
+        if (d.dateModified != null && !d.dateModified.trim().isEmpty()) {
+            Instant instant = Instant.parse(d.dateModified);
+            r.setDateModified(Date.from(instant));
+        }
 
         return r;
     }
 
-    private List<ResponsesDetails> convertToDetails(ResponseJson json, Responses parent) {
-        List<ResponsesDetails> list = new ArrayList<>();
+    private ResponsesDetails convertToDetails(ResponseJson r, PageJson p, QuestionJson q, AnswerJson a) {
+        ResponsesDetails d = new ResponsesDetails();
 
-        if (json.pages == null)
-            return list;
+        d.setSmId(r.surveyId);
+        d.setResponseId(r.id);
+        d.setRcptId(r.recipientId);
+        d.setPageId(p.id);
+        d.setQuestionId(q.id);
+        d.setChoiceId(a.choiceId);
+        d.setRowId(a.rowId);
+        d.setIsCorrect(a.isCorrect);
+        d.setScore(a.score);
+        d.setOpenAnswerText(a.text);
 
-        for (PageJson p : json.pages) {
-            if (p.questions == null) continue;
-
-            for (QuestionJson q : p.questions) {
-                if (q.answers == null) continue;
-
-                for (AnswerJson a : q.answers) {
-                    ResponsesDetails d = new ResponsesDetails();
-
-                    d.setSmId(json.survey_id);
-                    d.setResponseId(json.id);
-                    d.setRcptId(json.recipient_id);
-
-                    d.setPageId(p.id);
-                    d.setQuestionId(q.id);
-
-                    d.setChoiceId(a.choice_id != null ? a.choice_id : null);
-                    d.setRowId(a.row_id != null ? a.row_id : null);
-                    d.setOpenAnswerText(a.text != null ? a.text : null);
-
-                    // Score and correctness not in JSON
-                    d.setScore(0);
-                    d.setIsCorrect(0);
-
-                    d.setUpdateDate(new Date());
-
-                    list.add(d);
-                }
-            }
-        }
-
-        return list;
+        return d;
     }
 
     private Date convert(LocalDateTime ldt) {

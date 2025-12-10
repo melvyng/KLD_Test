@@ -18,6 +18,7 @@ package org.iadb.kic.kicsystem.integration.surveysreports.processing.facade;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.*;
@@ -29,6 +30,7 @@ import javax.annotation.Resource;
 import javax.ejb.*;
 import javax.enterprise.concurrent.ManagedExecutorService;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.iadb.kic.kicsystem.integration.surveysreports.dto.GetSurveyDetails;
 import org.iadb.kic.kicsystem.integration.surveysreports.dto.GetSurveyExtendedResponseDTO;
@@ -679,22 +681,46 @@ public class ProcessingFacade {
     }
 
     public static class ResponseJson {
-        public Integer total_time;
-        public String href;
-        public String ip_address;
         public String id;
-        public String date_modified;
-        public String response_status;
+
+        @JsonProperty("survey_id")
+        public String surveyId;
+
+        @JsonProperty("recipient_id")
+        public String recipientId;
+
+        @JsonProperty("collector_id")
+        public String collectorId;
+
+        @JsonProperty("response_status")
+        public String responseStatus;
+
+        @JsonProperty("language")
         public String language;
-        public String analyze_url;
-        public String date_created;
-        public String survey_id;
-        public String recipient_id;
-        public String collector_id;
-        public String edit_url;
+
+        @JsonProperty("ip_address")
+        public String ipAddress;
+
+        @JsonProperty("total_time")
+        public Integer totalTime;
+
+        public String href;
+
+        @JsonProperty("analyze_url")
+        public String analyzeUrl;
+
+        @JsonProperty("edit_url")
+        public String editUrl;
+
+        @JsonProperty("date_created")
+        public String dateCreated;
+
+        @JsonProperty("date_modified")
+        public String dateModified;
+
         public List<PageJson> pages;
-        // other fields ignored
     }
+
 
     public static class PageJson {
         public String id;
@@ -707,10 +733,17 @@ public class ProcessingFacade {
     }
 
     public static class AnswerJson {
-        public String choice_id;
-        public String row_id;
+        @JsonProperty("choice_id")
+        public String choiceId;
+
+        @JsonProperty("row_id")
+        public String rowId;
+
         public String text;
-        public String is_correct;
+
+        @JsonProperty("is_correct")
+        public Boolean isCorrect;
+
         public Integer score;
     }
 

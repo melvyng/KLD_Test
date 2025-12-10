@@ -18,6 +18,7 @@ package org.iadb.kic.kicsystem.integration.surveysreports.processing.facade;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -34,9 +35,7 @@ import org.iadb.kic.kicsystem.integration.surveysreports.dto.Page;
 import org.iadb.kic.kicsystem.integration.surveysreports.dto.Question;
 import org.iadb.kic.kicsystem.integration.surveysreports.dto.responses.bulk.Datum;
 import org.iadb.kic.kicsystem.integration.surveysreports.dto.responses.bulk.GetResponsesBulk;
-import org.iadb.kic.kicsystem.integration.surveysreports.jpa.entities.Participants;
-import org.iadb.kic.kicsystem.integration.surveysreports.jpa.entities.Questions;
-import org.iadb.kic.kicsystem.integration.surveysreports.jpa.entities.Surveys;
+import org.iadb.kic.kicsystem.integration.surveysreports.jpa.entities.*;
 import org.iadb.kic.kicsystem.integration.surveysreports.jpa.facade.AnswersFacade;
 import org.iadb.kic.kicsystem.integration.surveysreports.jpa.facade.RowsFacade;
 import org.iadb.kic.kicsystem.integration.surveysreports.jpa.facade.H2CommonFacade;
@@ -59,6 +58,8 @@ import com.fasterxml.jackson.databind.MappingIterator;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import javax.annotation.Resource;
+import javax.persistence.EntityManager;
+import javax.persistence.PersistenceContext;
 import javax.sql.DataSource;
 import java.io.BufferedReader;
 import java.io.File;
@@ -103,6 +104,14 @@ public class ProcessingFacade {
     //============
 
     private static final Logger logger = Logger.getLogger(ProcessingFacade.class.getName());
+
+    // Thread pool for background NDJSON processing
+    private final ExecutorService fileProcessorExecutor = Executors.newSingleThreadExecutor();
+    // JSON mapper
+    private final ObjectMapper mapper = new ObjectMapper();
+    @PersistenceContext(unitName = "surveysdbPU")
+    private EntityManager em;
+
     // ✅ Inject this same EJB through the container proxy
     @Resource
     private SessionContext context;
@@ -668,6 +677,46 @@ public class ProcessingFacade {
         return result;
     }
 
+    public static class ResponseJson {
+        public Integer total_time;
+        public String href;
+        public String ip_address;
+        public String id;
+        public String date_modified;
+        public String response_status;
+        public String language;
+        public String analyze_url;
+        public String date_created;
+        public String survey_id;
+        public String recipient_id;
+        public String collector_id;
+        public String edit_url;
+        public List<PageJson> pages;
+        // other fields ignored
+    }
+
+    public static class PageJson {
+        public String id;
+        public List<QuestionJson> questions;
+    }
+
+    public static class QuestionJson {
+        public String id;
+        public List<AnswerJson> answers;
+    }
+
+    public static class AnswerJson {
+        public String choice_id;
+        public String row_id;
+        public String text;
+        public String is_correct;
+        public Integer score;
+    }
+
+    // Batch sizes, can tune if needed
+    private static final int RESPONSES_BATCH = 250;
+    private static final int DETAILS_BATCH = 1000;
+
     private void fetchNextPageJSON(List<Future<GetResponsesBulk>> futures,
                                String surveyId, int page) {
 
@@ -706,119 +755,119 @@ public class ProcessingFacade {
 
         long responsesProcessed = 0;
         long detailsProcessed = 0;
+        int batchCount = 0;
 
         try (BufferedReader br = new BufferedReader(new FileReader(file));
-             MappingIterator<ResponseJson> it = mapper.readerFor(ResponseJson.class).readValues(br);
-             Connection conn = dataSource.getConnection()) {
+             MappingIterator<ResponseJson> it = mapper.readerFor(ResponseJson.class).readValues(br)) {
 
-            conn.setAutoCommit(false);
+            while (it.hasNext()) {
+                ResponseJson r = it.next();
 
-            String sqlResp = "INSERT INTO responses "
-                    + "(response_id, sm_id, rcpt_id, collector_id, date_modified, date_created, ip_address, response_status, response_language, total_time, response_href, analyze_url, edit_url) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    + "ON DUPLICATE KEY UPDATE update_date = CURRENT_TIMESTAMP(), response_status = VALUES(response_status), total_time = VALUES(total_time), analyze_url = VALUES(analyze_url), edit_url = VALUES(edit_url)";
+                // Convert main response entity
+                Responses respEntity = convertToResponses(r);
+                em.persist(respEntity);
+                responsesProcessed++;
 
-            String sqlDetail = "INSERT INTO responses_details "
-                    + "(sm_id, response_id, rcpt_id, page_id, question_id, choice_id, row_id, is_correct, score, open_answer_text) "
-                    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                    + "ON DUPLICATE KEY UPDATE is_correct = VALUES(is_correct), score = VALUES(score), open_answer_text = VALUES(open_answer_text), update_date = CURRENT_TIMESTAMP()";
-
-            try (PreparedStatement psResp = conn.prepareStatement(sqlResp);
-                 PreparedStatement psDetail = conn.prepareStatement(sqlDetail)) {
-
-                int respBatchCount = 0;
-                int detailBatchCount = 0;
-
-                while (it.hasNext()) {
-                    ResponseJson r = it.next();
-
-                    // Prepare responses insert
-                    bindResponse(psResp, r);
-                    psResp.addBatch();
-                    respBatchCount++;
-
-                    // Process pages -> questions -> answers
-                    if (r.pages != null) {
-                        for (PageJson p : r.pages) {
-                            if (p.questions == null) continue;
-                            for (QuestionJson q : p.questions) {
-                                if (q.answers == null) continue;
-                                for (AnswerJson a : q.answers) {
-                                    bindDetail(psDetail, r, p, q, a);
-                                    psDetail.addBatch();
-                                    detailBatchCount++;
-                                    detailsProcessed++;
-                                    // execute detail batch periodically
-                                    if (detailBatchCount >= DETAILS_BATCH) {
-                                        psDetail.executeBatch();
-                                        conn.commit();
-                                        detailBatchCount = 0;
-                                        logger.info("Committed details batch; total details processed: " + detailsProcessed);
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    responsesProcessed++;
-
-                    // execute response batch periodically
-                    if (respBatchCount >= RESPONSES_BATCH) {
-                        psResp.executeBatch();
-                        conn.commit();
-                        respBatchCount = 0;
-                        logger.info("Committed responses batch; total responses processed: " + responsesProcessed);
-                    }
+                // Convert detail entities
+                List<ResponsesDetails> detailEntities = convertToDetails(r, respEntity);
+                for (ResponsesDetails d : detailEntities) {
+                    em.persist(d);
+                    detailsProcessed++;
                 }
 
-                // final flush
-                if (respBatchCount > 0) {
-                    psResp.executeBatch();
+                // Batch flush every 100
+                if (++batchCount % 100 == 0) {
+                    em.flush();
+                    em.clear();
+                    logger.info("Flushed batch: responses=" + responsesProcessed +
+                            " details=" + detailsProcessed);
                 }
-                if (detailBatchCount > 0) {
-                    psDetail.executeBatch();
-                }
-                conn.commit();
-                logger.info(String.format("NDJSON import finished. responses=%d details=%d", responsesProcessed, detailsProcessed));
-            } catch (SQLException e) {
-                conn.rollback();
-                throw e;
             }
+
+            // Final flush
+            em.flush();
+            em.clear();
+
+            logger.info(String.format(
+                    "NDJSON import finished. responses=%d details=%d",
+                    responsesProcessed, detailsProcessed
+            ));
+
         } catch (Exception e) {
             logger.log(Level.SEVERE, "Error processing NDJSON file: " + filePath, e);
             throw e;
         }
     }
 
-    private void bindResponse(PreparedStatement ps, ResponseJson r) throws SQLException {
-        // resp: response_id, sm_id, rcpt_id, collector_id, date_modified, date_created, ip_address, response_status, response_language, total_time, response_href, analyze_url, edit_url
-        ps.setString(1, safe(r.id));
-        ps.setString(2, safe(r.survey_id));
-        ps.setString(3, safe(r.recipient_id));
-        ps.setString(4, safe(r.collector_id));
-        ps.setTimestamp(5, parseTimestamp(r.date_modified));
-        ps.setTimestamp(6, parseTimestamp(r.date_created));
-        ps.setString(7, safe(r.ip_address));
-        ps.setString(8, safe(r.response_status));
-        ps.setString(9, safe(r.language));
-        if (r.total_time != null) ps.setInt(10, r.total_time); else ps.setNull(10, java.sql.Types.INTEGER);
-        ps.setString(11, safe(r.href));
-        ps.setString(12, safe(r.analyze_url));
-        ps.setString(13, safe(r.edit_url));
+    private Responses convertToResponses(ResponseJson json) {
+        Responses r = new Responses();
+
+        r.setResponseId(json.id);                              // PK
+        r.setSmId(json.survey_id);                             // survey_id
+        r.setRcptId(json.recipient_id);                        // recipient ID
+        r.setCollectorId(json.collector_id);                   // collector
+        r.setIpAddress(json.ip_address);
+        r.setResponseStatus(json.response_status);
+        r.setResponseLanguage(json.language);
+        r.setTotalTime(json.total_time != null ? json.total_time : 0);
+
+        r.setResponseHref(json.href);
+        r.setAnalyzeUrl(json.analyze_url);
+        r.setEditUrl(json.edit_url);
+
+        // Handling dates
+        try {
+            if (json.date_modified != null)
+                r.setDateModified(OffsetDateTime.parse(json.date_modified).toLocalDateTime());
+            if (json.date_created != null)
+                r.setDateCreated(OffsetDateTime.parse(json.date_created).toLocalDateTime());
+        } catch (Exception e) {
+            logger.warning("Date parse error for response " + json.id + ": " + e.getMessage());
+        }
+
+        r.setUpdateDate(new Date());
+
+        return r;
     }
 
-    private void bindDetail(PreparedStatement ps, ResponseJson r, PageJson p, QuestionJson q, AnswerJson a) throws SQLException {
-        // sm_id, response_id, rcpt_id, page_id, question_id, choice_id, row_id, is_correct, score, open_answer_text
-        ps.setString(1, safe(r.survey_id));
-        ps.setString(2, safe(r.id));
-        ps.setString(3, safe(r.recipient_id));
-        ps.setString(4, safe(p.id));
-        ps.setString(5, safe(q.id));
-        ps.setString(6, safe(a.choice_id));
-        ps.setString(7, safe(a.row_id));
-        ps.setString(8, safe(a.is_correct)); // string in your DB; convert booleans if needed
-        if (a.score != null) ps.setInt(9, a.score); else ps.setNull(9, java.sql.Types.INTEGER);
-        ps.setString(10, safe(a.text));
+    private List<ResponsesDetails> convertToDetails(ResponseJson json, Responses parent) {
+        List<ResponsesDetails> list = new ArrayList<>();
+
+        if (json.pages == null)
+            return list;
+
+        for (PageJson p : json.pages) {
+            if (p.questions == null) continue;
+
+            for (QuestionJson q : p.questions) {
+                if (q.answers == null) continue;
+
+                for (AnswerJson a : q.answers) {
+                    ResponsesDetails d = new ResponsesDetails();
+
+                    d.setSmId(json.survey_id);
+                    d.setResponseId(json.id);
+                    d.setRcptId(json.recipient_id);
+
+                    d.setPageId(p.id);
+                    d.setQuestionId(q.id);
+
+                    d.setChoiceId(a.choice_id != null ? a.choice_id : null);
+                    d.setRowId(a.row_id != null ? a.row_id : null);
+                    d.setOpenAnswerText(a.text != null ? a.text : null);
+
+                    // Score and correctness not in JSON
+                    d.setScore(0);
+                    d.setIsCorrect(0);
+
+                    d.setUpdateDate(new Date());
+
+                    list.add(d);
+                }
+            }
+        }
+
+        return list;
     }
 
     private String safe(String s) {

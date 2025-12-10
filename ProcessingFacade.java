@@ -19,6 +19,7 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
@@ -818,9 +819,9 @@ public class ProcessingFacade {
         // Handling dates
         try {
             if (json.date_modified != null)
-                r.setDateModified(OffsetDateTime.parse(json.date_modified).toLocalDateTime());
+                r.setDateModified(convert(r.dateModified));
             if (json.date_created != null)
-                r.setDateCreated(OffsetDateTime.parse(json.date_created).toLocalDateTime());
+                r.setDateCreated(convert(r.dateCreated));
         } catch (Exception e) {
             logger.warning("Date parse error for response " + json.id + ": " + e.getMessage());
         }
@@ -870,22 +871,10 @@ public class ProcessingFacade {
         return list;
     }
 
-    private String safe(String s) {
-        return s == null ? null : s;
+    private Date convert(LocalDateTime ldt) {
+        if (ldt == null) return null;
+        return Date.from(ldt.atZone(ZoneId.systemDefault()).toInstant());
     }
-
-    private java.sql.Timestamp parseTimestamp(String iso) {
-        if (iso == null) return null;
-        try {
-            // rely on OffsetDateTime parsing for examples like 2025-08-06T10:18:58+00:00
-            OffsetDateTime od = OffsetDateTime.parse(iso);
-            return Timestamp.from(od.toInstant());
-        } catch (DateTimeParseException ex) {
-            logger.log(Level.WARNING, "Unable to parse timestamp: " + iso, ex);
-            return null;
-        }
-    }
-
 
     @TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED)
     private Map<String, Object> doDownloadResponses(String surveyId) {

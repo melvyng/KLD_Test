@@ -65,6 +65,7 @@ import javax.annotation.Resource;
 import javax.persistence.EntityManager;
 import javax.persistence.PersistenceContext;
 import javax.sql.DataSource;
+import javax.transaction.Transactional;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -723,17 +724,19 @@ public class ProcessingFacade {
         public List<PageJson> pages;
     }
 
-
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PageJson {
         public String id;
         public List<QuestionJson> questions;
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class QuestionJson {
         public String id;
         public List<AnswerJson> answers;
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class AnswerJson {
         @JsonProperty("choice_id")
         public String choiceId;
@@ -780,6 +783,7 @@ public class ProcessingFacade {
         });
     }
 
+    @Transactional(Transactional.TxType.REQUIRED)
     private void processResponsesFromFileSync(String filePath) throws Exception {
         File file = new File(filePath);
         if (!file.exists() || !file.canRead()) {

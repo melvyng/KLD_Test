@@ -96,9 +96,6 @@ public class ProcessingFacade {
     @Resource
     private ManagedExecutorService executor; // Usa el pool de WildFly (default)
 
-    @Resource
-    private UserTransaction utx;
-
     private static final String FAMILY = "matrix";
     private static final String SUBTYPE = "rating";
     private static final int CHUNK_SIZE = 100; // tamaño de bloque ajustable

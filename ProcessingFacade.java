@@ -92,6 +92,9 @@ import java.util.logging.Logger;
 @TransactionManagement(TransactionManagementType.CONTAINER)
 public class ProcessingFacade {
 
+    @EJB
+    private ProcessingFacade self;   // <-- Inject EJB proxy of *your own class*
+
     @Resource
     private ManagedExecutorService executor; // Usa el pool de WildFly (default)
 
@@ -776,7 +779,7 @@ public class ProcessingFacade {
     public void processResponsesFromFile(String filePath) {
         fileProcessorExecutor.submit(() -> {
             try {
-                processResponsesFromFileSync(filePath);
+                self.processResponsesFromFileSync(filePath);
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "Error in asynchronous file processing: " + filePath, e);
             }

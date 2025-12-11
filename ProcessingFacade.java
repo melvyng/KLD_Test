@@ -783,7 +783,7 @@ public class ProcessingFacade {
         });
     }
 
-    @Transactional(Transactional.TxType.REQUIRED)
+    @TransactionAttribute(TransactionAttributeType.REQUIRED)
     private void processResponsesFromFileSync(String filePath) throws Exception {
         File file = new File(filePath);
         if (!file.exists() || !file.canRead()) {

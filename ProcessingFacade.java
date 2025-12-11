@@ -30,6 +30,7 @@ import javax.annotation.Resource;
 import javax.ejb.*;
 import javax.enterprise.concurrent.ManagedExecutorService;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.iadb.kic.kicsystem.integration.surveysreports.dto.GetSurveyDetails;
@@ -680,6 +681,7 @@ public class ProcessingFacade {
         return result;
     }
 
+    @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ResponseJson {
         public String id;
 
@@ -854,34 +856,41 @@ public class ProcessingFacade {
 
 
     private Responses convertToResponses(ResponseJson d) {
+
         Responses r = new Responses();
 
-        r.setResponseId(d.id);
-        r.setSmId(d.surveyId);
-        r.setRcptId(d.recipientId);
-        r.setCollectorId(d.collectorId);
+        // Convert String ID to Long
+        if (d.id != null) {
+            r.setResponseId(d.id);
+        }
+
+        if (d.surveyId != null) {
+            r.setSmId(d.surveyId);
+        }
+
+        if (d.recipientId != null) {
+            r.setRcptId(d.recipientId);
+        }
+
+        if (d.collectorId != null) {
+            r.setCollectorId(d.collectorId);
+        }
+
+        r.setDateCreated(parseSMDate(d.dateCreated));
+        r.setDateModified(parseSMDate(d.dateModified));
+
         r.setIpAddress(d.ipAddress);
         r.setResponseStatus(d.responseStatus);
         r.setResponseLanguage(d.language);
         r.setTotalTime(d.totalTime);
+
         r.setResponseHref(d.href);
         r.setAnalyzeUrl(d.analyzeUrl);
         r.setEditUrl(d.editUrl);
 
-        // Convert dateCreated
-        if (d.dateCreated != null && !d.dateCreated.trim().isEmpty()) {
-            Instant instant = Instant.parse(d.dateCreated);
-            r.setDateCreated(Date.from(instant));
-        }
-
-        // Convert dateModified
-        if (d.dateModified != null && !d.dateModified.trim().isEmpty()) {
-            Instant instant = Instant.parse(d.dateModified);
-            r.setDateModified(Date.from(instant));
-        }
-
         return r;
     }
+
 
     private ResponsesDetails convertToDetails(ResponseJson r, PageJson p, QuestionJson q, AnswerJson a) {
         ResponsesDetails d = new ResponsesDetails();
@@ -900,9 +909,15 @@ public class ProcessingFacade {
         return d;
     }
 
-    private Date convert(LocalDateTime ldt) {
-        if (ldt == null) return null;
-        return Date.from(ldt.atZone(ZoneId.systemDefault()).toInstant());
+    private Date parseSMDate(String str) {
+        if (str == null || str.isEmpty()) return null;
+        try {
+            OffsetDateTime odt = OffsetDateTime.parse(str);
+            return Date.from(odt.toInstant());
+        } catch (Exception e) {
+            logger.warning("Failed to parse timestamp: " + str);
+            return null;
+        }
     }
 
     @TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED)

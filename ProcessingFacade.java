@@ -66,6 +66,7 @@ import javax.persistence.EntityManager;
 import javax.persistence.PersistenceContext;
 import javax.sql.DataSource;
 import javax.transaction.Transactional;
+import javax.transaction.UserTransaction;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -92,11 +93,11 @@ import java.util.logging.Logger;
 @TransactionManagement(TransactionManagementType.CONTAINER)
 public class ProcessingFacade {
 
-    @EJB
-    private ProcessingFacade self;   // <-- Inject EJB proxy of *your own class*
-
     @Resource
     private ManagedExecutorService executor; // Usa el pool de WildFly (default)
+
+    @Resource
+    private UserTransaction utx;
 
     private static final String FAMILY = "matrix";
     private static final String SUBTYPE = "rating";
@@ -672,9 +673,11 @@ public class ProcessingFacade {
             // start processing file asynchronously so the endpoint doesn't block
             executor.submit(() -> {
                 try {
-                    processResponsesFromFileSync(outFile.getAbsolutePath());
+                    // call a NON-TRANSACTIONAL public method inside EJB
+                    ProcessingFacade proxy = context.getBusinessObject(ProcessingFacade.class);
+                    proxy.asyncProcessResponses(filePath);
                 } catch (Exception e) {
-                    logger.log(Level.SEVERE, "Error processing NDJSON file: " + outFile.getAbsolutePath(), e);
+                    logger.severe("Error processing NDJSON: " + e.getMessage());
                 }
             });
         }
@@ -684,6 +687,17 @@ public class ProcessingFacade {
 
         return result;
     }
+
+    @Asynchronous
+    @TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED)
+    public void asyncProcessResponses(String filePath) {
+        try {
+            processResponsesFromFileSync(filePath);  // This one still uses REQUIRED
+        } catch (Exception e) {
+            logger.severe("Error in async processing: " + e.getMessage());
+        }
+    }
+
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ResponseJson {
@@ -779,7 +793,8 @@ public class ProcessingFacade {
     public void processResponsesFromFile(String filePath) {
         fileProcessorExecutor.submit(() -> {
             try {
-                self.processResponsesFromFileSync(filePath);
+                ProcessingFacade proxy = context.getBusinessObject(ProcessingFacade.class);
+                proxy.asyncProcessResponses(filePath);
             } catch (Exception e) {
                 logger.log(Level.SEVERE, "Error in asynchronous file processing: " + filePath, e);
             }
@@ -787,7 +802,7 @@ public class ProcessingFacade {
     }
 
     @TransactionAttribute(TransactionAttributeType.REQUIRED)
-    private void processResponsesFromFileSync(String filePath) throws Exception {
+    public void processResponsesFromFileSync(String filePath) throws Exception {
         File file = new File(filePath);
         if (!file.exists() || !file.canRead()) {
             logger.warning("NDJSON file not accessible: " + filePath);

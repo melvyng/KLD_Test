@@ -686,7 +686,7 @@ public class ProcessingFacade {
     }
 
     @Asynchronous
-    @TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED)
+    @TransactionAttribute(TransactionAttributeType.REQUIRES_NEW)
     public void asyncProcessResponses(String filePath) {
         try {
             processResponsesFromFileSync(filePath);  // This one still uses REQUIRED

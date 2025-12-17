@@ -598,88 +598,155 @@ public class ProcessingFacade {
     private Map<String, Object> doDownloadResponsesMOOCL3JSON(String surveyId) throws Exception {
 
         Map<String, Object> result = new HashMap<>();
+        List<String> surveyIds = new ArrayList<>();
 
-        List<String> surveyIds = surveysFacade.findMOOCL3Ids();
+        if (surveyId != null && !surveyId.trim().isEmpty()) {
+            Surveys survey = surveysFacade.findBySmId(surveyId);
+            logger.info("Surveys to download: " + survey);
+                surveyIds.add(surveyId);
+        } else {
+            surveyIds = surveysFacade.findMOOCL3Ids();
+        }
+
         logger.info("Surveys to download as JSON: " + surveyIds.size());
 
         int totalResponses = 0;
         List<String> outputFiles = new ArrayList<>();
 
         for (String currentSurveyId : surveyIds) {
-
             logger.info("Downloading JSON for Survey ID: " + currentSurveyId);
 
-            // File output
-            //String filePath = "/tmp/survey_" + currentSurveyId + "_responses.ndjson";
-            String filePath = "/opt/jboss/wildfly/standalone/log/survey_" + currentSurveyId + "_responses.ndjson";
+            // 🔹 NEW — find collectors for this survey
+            List<Object[]> collectors = em.createNativeQuery(
+                "SELECT coll_id, status " +
+                    "FROM successFactorsDB.collectors_in_surveymonkey " +
+                    "WHERE survey_id = :surveyId"
+            )
+            .setParameter("surveyId", currentSurveyId)
+            .getResultList();
 
-            outputFiles.add(filePath);
+            // If no collectors, skip
+            if (collectors == null || collectors.isEmpty()) {
+                logger.warning("No collectors found for survey: " + currentSurveyId);
+                continue;
+            }
 
-            File outFile = new File(filePath);
-            BufferedWriter writer = new BufferedWriter(new FileWriter(outFile, false));
+            for (Object[] col : collectors) {
+                String collectorId = String.valueOf(col[0]);
+                String collectorStatus = String.valueOf(col[1]);
 
-            try {
-                int page = 1;
-                boolean hasMore = true;
+                // 🔹 NEW — skip if already frozen
+                Long frozenCount = ((Number) em.createNativeQuery(
+                "SELECT COUNT(1) FROM responses " +
+                    "WHERE collector_id = :collId AND skip_update = 'Y'"
+                )
+                .setParameter("collId", collectorId)
+                .getSingleResult()).longValue();
 
-                // Prefetch list
-                List<Future<GetResponsesBulk>> apiFutures = new ArrayList<>();
+                if (frozenCount != null && frozenCount > 0) {
+                    logger.info("Skipping frozen collector: " + collectorId);
+                    continue;
+                }
 
-                // Prefetch the first page
-                fetchNextPageJSON(apiFutures, currentSurveyId, page++);
+                // 🔹 NEW — delete old details for this collector
+                em.createNativeQuery(
+                  "DELETE FROM responses_details " +
+                        "WHERE sm_id = :smId " +
+                        "AND response_id IN ( " +
+                        "    SELECT response_id FROM responses " +
+                        "    WHERE collector_id = :collId" +
+                    ")"
+                )
+                .setParameter("smId", currentSurveyId)
+                .setParameter("collId", collectorId)
+                .executeUpdate();
 
-                ObjectMapper mapper = new ObjectMapper();
+                // 🔹 NEW — delete old responses for this collector
+                em.createNativeQuery(
+                    "DELETE FROM responses WHERE collector_id = :collId"
+                )
+                .setParameter("collId", collectorId)
+                .executeUpdate();
 
-                while (hasMore) {
-                    // Wait for page result
-                    GetResponsesBulk responseBulk = apiFutures.remove(0).get();
+                // File output
+                String filePath = "/opt/jboss/wildfly/standalone/log/survey_" + currentSurveyId + "_responses.ndjson";
+                outputFiles.add(filePath);
+                File outFile = new File(filePath);
+                BufferedWriter writer = new BufferedWriter(new FileWriter(outFile, false));
 
-                    if (responseBulk != null &&
-                            responseBulk.getData() != null &&
-                            !responseBulk.getData().isEmpty()) {
+                try {
+                    int page = 1;
+                    boolean hasMore = true;
 
-                        List<Datum> responses = responseBulk.getData();
-                        totalResponses += responses.size();
+                    // Prefetch list
+                    List<Future<GetResponsesBulk>> apiFutures = new ArrayList<>();
 
-                        logger.info("Fetched page " + (page - 1)
-                                + " with " + responses.size() + " items");
+                    // Prefetch the first page
+                    fetchNextPageJSON(apiFutures, currentSurveyId, page++);
 
-                        // Write each Datum object as NDJSON
-                        for (Datum datum : responses) {
-                            String json = mapper.writeValueAsString(datum);
-                            writer.write(json);
-                            writer.newLine();
-                        }
+                    ObjectMapper mapper = new ObjectMapper();
 
-                        // Prefetch next page
-                        if (responseBulk.getPerPage() * (page - 1) < responseBulk.getTotal()) {
-                            fetchNextPage(apiFutures, currentSurveyId, page++);
+                    while (hasMore) {
+                        // Wait for page result
+                        GetResponsesBulk responseBulk = apiFutures.remove(0).get();
+
+                        if (responseBulk != null &&
+                                responseBulk.getData() != null &&
+                                !responseBulk.getData().isEmpty()) {
+
+                            List<Datum> responses = responseBulk.getData();
+                            totalResponses += responses.size();
+
+                            logger.info("Fetched page " + (page - 1)
+                                    + " with " + responses.size() + " items");
+
+                            // Write each Datum object as NDJSON
+                            for (Datum datum : responses) {
+                                String json = mapper.writeValueAsString(datum);
+                                writer.write(json);
+                                writer.newLine();
+                            }
+
+                            // Prefetch next page
+                            if (responseBulk.getPerPage() * (page - 1) < responseBulk.getTotal()) {
+                                fetchNextPage(apiFutures, currentSurveyId, page++);
+                            } else {
+                                hasMore = false;
+                            }
                         } else {
                             hasMore = false;
                         }
-                    } else {
-                        hasMore = false;
                     }
+
+                } finally {
+                    writer.flush();
+                    writer.close();
                 }
 
-            } finally {
-                writer.flush();
-                writer.close();
+                logger.info("Saved NDJSON file: " + outFile.getAbsolutePath());
+                // start processing file asynchronously so the endpoint doesn't block
+                executor.submit(() -> {
+                    try {
+                        // call a NON-TRANSACTIONAL public method inside EJB
+                        ProcessingFacade proxy = context.getBusinessObject(ProcessingFacade.class);
+                        proxy.asyncProcessResponses(filePath);
+                    } catch (Exception e) {
+                        logger.severe("Error processing NDJSON: " + e.getMessage());
+                    }
+                });
+
+                // 🔹 NEW — mark skip_update if collector is closed
+                if ("closed".equalsIgnoreCase(collectorStatus)) {
+                    em.createNativeQuery(
+                                    "UPDATE responses SET skip_update = 'Y' WHERE collector_id = :collId"
+                            )
+                            .setParameter("collId", collectorId)
+                            .executeUpdate();
+
+                    logger.info("Collector " + collectorId + " closed → frozen");
+                }
             }
-
-            logger.info("Saved NDJSON file: " + outFile.getAbsolutePath());
-            // start processing file asynchronously so the endpoint doesn't block
-            executor.submit(() -> {
-                try {
-                    // call a NON-TRANSACTIONAL public method inside EJB
-                    ProcessingFacade proxy = context.getBusinessObject(ProcessingFacade.class);
-                    proxy.asyncProcessResponses(filePath);
-                } catch (Exception e) {
-                    logger.severe("Error processing NDJSON: " + e.getMessage());
-                }
-            });
         }
-
         result.put("files", outputFiles);
         result.put("responses", totalResponses);
 

@@ -63,6 +63,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import javax.annotation.Resource;
 import javax.persistence.EntityManager;
+import javax.persistence.NoResultException;
 import javax.persistence.PersistenceContext;
 import javax.sql.DataSource;
 import javax.transaction.Transactional;
@@ -822,6 +823,13 @@ public class ProcessingFacade {
 
                 // Convert & persist response
                 Responses r = convertToResponses(json);
+
+                // CHECK IF RESPONSE ALREADY EXISTS
+                Long existingRid = findResponsesRidByResponseId(r.getResponseId());
+
+                if (existingRid != null) {
+                    r.setRid(existingRid); // <-- THIS IS THE KEY LINE
+                }
                 em.merge(r);
                 responsesProcessed++;
 
@@ -836,6 +844,21 @@ public class ProcessingFacade {
                             for (AnswerJson a : q.answers) {
 
                                 ResponsesDetails d = convertToDetails(json, p, q, a);
+
+                                // 🔑 CHECK IF DETAIL ALREADY EXISTS
+                                Long existingRdid = findResponsesDetailsRdid(
+                                        d.getSmId(),
+                                        d.getResponseId(),
+                                        d.getPageId(),
+                                        d.getQuestionId(),
+                                        d.getChoiceId(),
+                                        d.getRowId()
+                                );
+
+                                if (existingRdid != null) {
+                                    d.setRdid(existingRdid); // <-- KEY LINE
+                                }
+
                                 em.merge(d);
 
                                 detailsProcessed++;
@@ -935,6 +958,50 @@ public class ProcessingFacade {
             return Date.from(odt.toInstant());
         } catch (Exception e) {
             logger.warning("Failed to parse timestamp: " + str);
+            return null;
+        }
+    }
+
+    private Long findResponsesRidByResponseId(String responseId) {
+        try {
+            return em.createQuery(
+                            "SELECT r.rid FROM Responses r WHERE r.responseId = :responseId",
+                            Long.class
+                    )
+                    .setParameter("responseId", responseId)
+                    .getSingleResult();
+        } catch (NoResultException e) {
+            return null;
+        }
+    }
+
+    private Long findResponsesDetailsRdid(
+            String smId,
+            String responseId,
+            String pageId,
+            String questionId,
+            String choiceId,
+            String rowId
+    ) {
+        try {
+            return em.createQuery(
+                            "SELECT rd.rdid FROM ResponsesDetails rd " +
+                                    "WHERE rd.smId = :smId " +
+                                    "AND rd.responseId = :responseId " +
+                                    "AND rd.pageId = :pageId " +
+                                    "AND rd.questionId = :questionId " +
+                                    "AND rd.choiceId = :choiceId " +
+                                    "AND ( (rd.rowId IS NULL AND :rowId IS NULL) OR rd.rowId = :rowId )",
+                            Long.class
+                    )
+                    .setParameter("smId", smId)
+                    .setParameter("responseId", responseId)
+                    .setParameter("pageId", pageId)
+                    .setParameter("questionId", questionId)
+                    .setParameter("choiceId", choiceId)
+                    .setParameter("rowId", rowId)
+                    .getSingleResult();
+        } catch (NoResultException e) {
             return null;
         }
     }

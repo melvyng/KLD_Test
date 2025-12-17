@@ -594,7 +594,8 @@ public class ProcessingFacade {
         return result;
     }
 
-    @TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED)
+    //@TransactionAttribute(TransactionAttributeType.NOT_SUPPORTED) //antes así estaba
+    @TransactionAttribute(TransactionAttributeType.REQUIRED)
     private Map<String, Object> doDownloadResponsesMOOCL3JSON(String surveyId) throws Exception {
 
         Map<String, Object> result = new HashMap<>();

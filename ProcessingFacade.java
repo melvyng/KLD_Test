@@ -587,7 +587,8 @@ public class ProcessingFacade {
     public Map<String, Object> downloadResponsesMOOCL3JSON(String surveyId) {
         Map<String, Object> result = new HashMap<>();
         try {
-            result.putAll(doDownloadResponsesMOOCL3JSON(surveyId));
+            ProcessingFacade proxy = context.getBusinessObject(ProcessingFacade.class);
+            result.putAll(proxy.doDownloadResponsesMOOCL3JSON(surveyId));
         } catch (Exception e) {
             logger.log(Level.SEVERE, "Error during JSON download", e);
         }

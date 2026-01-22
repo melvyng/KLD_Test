@@ -672,7 +672,8 @@ public class ProcessingFacade {
                 .executeUpdate();
 
                 // File output
-                String filePath = "/opt/jboss/wildfly/standalone/log/survey_" + currentSurveyId + "_responses.ndjson";
+                //String filePath = "/opt/jboss/wildfly/standalone/log/survey_" + currentSurveyId + "_responses.ndjson";
+                String filePath = "/opt/jboss/wildfly/standalone/log/survey_" + currentSurveyId + "_collector_" + collectorId + "_responses.ndjson";
                 outputFiles.add(filePath);
                 File outFile = new File(filePath);
                 BufferedWriter writer = new BufferedWriter(new FileWriter(outFile, false));

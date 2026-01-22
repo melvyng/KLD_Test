@@ -634,6 +634,7 @@ public class ProcessingFacade {
             }
 
             for (Object[] col : collectors) {
+                logger.info("Checking Survey ID: " + currentSurveyId + " and collector ID: " + col[0]);
                 String collectorId = String.valueOf(col[0]);
                 String collectorStatus = String.valueOf(col[1]);
 
@@ -727,7 +728,7 @@ public class ProcessingFacade {
 
                 logger.info("Saved NDJSON file: " + outFile.getAbsolutePath());
                 // start processing file asynchronously so the endpoint doesn't block
-                executor.submit(() -> {
+                /*executor.submit(() -> {
                     try {
                         // call a NON-TRANSACTIONAL public method inside EJB
                         ProcessingFacade proxy = context.getBusinessObject(ProcessingFacade.class);
@@ -735,7 +736,10 @@ public class ProcessingFacade {
                     } catch (Exception e) {
                         logger.severe("Error processing NDJSON: " + e.getMessage());
                     }
-                });
+                });*/
+                logger.info("START processing responses MOOC L3 survey " + currentSurveyId);
+                processResponsesFromFileSync(filePath); // Sequential
+                logger.info("END processing responses MOOC L3 survey " + currentSurveyId);
 
                 // 🔹 NEW — mark skip_update if collector is closed
                 if ("closed".equalsIgnoreCase(collectorStatus)) {
